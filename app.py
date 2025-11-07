@@ -13,8 +13,12 @@ CORS(app)
 
 # Database configuration
 DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://')
+if DATABASE_URL:
+    if DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://')
+else:
+    # Use SQLite as fallback when DATABASE_URL is not set
+    DATABASE_URL = 'sqlite:///pnl_tracker.db'
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
