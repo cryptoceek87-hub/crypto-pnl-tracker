@@ -1,17 +1,51 @@
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 import pandas as pd
-import json
 from datetime import datetime
 import io
+import os
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment
 
 app = Flask(__name__)
 CORS(app)
 
+# Database configuration
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://')
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+
 # Exchange rate
 EXCHANGE_RATE = 80
+
+# Database Model
+class Entry(db.Model):
+    __tablename__ = 'entries'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    date = db.Column(db.Date, nullable=False)
+    gain = db.Column(db.Float, default=0)
+    loss = db.Column(db.Float, default=0)
+    wd = db.Column(db.Float, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'Date': self.date.strftime('%Y-%m-%d'),
+            'Gain': self.gain,
+            'Loss': self.loss,
+            'WD': self.wd
+        }
+
+# Create tables
+with app.app_context():
+    db.create_all()
 
 def calculate_daily_metrics(data):
     """Calculate all derived columns for daily data"""
@@ -97,6 +131,71 @@ def calculate_monthly_summary(daily_data):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/api/entries', methods=['GET'])
+def get_entries():
+    """Get all entries from database"""
+    try:
+        entries = Entry.query.order_by(Entry.date).all()
+        data = [entry.to_dict() for entry in entries]
+        return jsonify({
+            'success': True,
+            'data': data
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+@app.route('/api/entries', methods=['POST'])
+def add_entry():
+    """Add new entry to database"""
+    try:
+        data = request.json
+        entry = Entry(
+            date=datetime.strptime(data['Date'], '%Y-%m-%d').date(),
+            gain=float(data.get('Gain', 0)),
+            loss=float(data.get('Loss', 0)),
+            wd=float(data.get('WD', 0))
+        )
+        db.session.add(entry)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Entry added successfully'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+@app.route('/api/entries/<int:entry_id>', methods=['DELETE'])
+def delete_entry(entry_id):
+    """Delete entry from database"""
+    try:
+        entry = Entry.query.get(entry_id)
+        if entry:
+            db.session.delete(entry)
+            db.session.commit()
+            return jsonify({
+                'success': True,
+                'message': 'Entry deleted successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Entry not found'
+            }), 404
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
 
 @app.route('/api/calculate', methods=['POST'])
 def calculate():
@@ -211,7 +310,7 @@ def export_excel():
 
 @app.route('/api/import/excel', methods=['POST'])
 def import_excel():
-    """Import data from Excel file"""
+    """Import data from Excel file and save to database"""
     try:
         if 'file' not in request.files:
             return jsonify({'success': False, 'error': 'No file provided'}), 400
@@ -231,21 +330,29 @@ def import_excel():
         if not all(col in df.columns for col in required_cols):
             return jsonify({'success': False, 'error': 'Missing required columns'}), 400
         
-        data = []
+        # Clear existing entries
+        Entry.query.delete()
+        
+        # Add new entries
         for _, row in df.iterrows():
-            data.append({
-                'Date': str(row['Date']),
-                'Gain': float(row['Gain(in $)']) if pd.notna(row['Gain(in $)']) else 0,
-                'Loss': float(row['Loss(in $)']) if pd.notna(row['Loss(in $)']) else 0,
-                'WD': float(row['W/D(in $)']) if pd.notna(row['W/D(in $)']) else 0
-            })
+            if pd.notna(row['Date']):
+                entry = Entry(
+                    date=pd.to_datetime(row['Date']).date(),
+                    gain=float(row['Gain(in $)']) if pd.notna(row['Gain(in $)']) else 0,
+                    loss=float(row['Loss(in $)']) if pd.notna(row['Loss(in $)']) else 0,
+                    wd=float(row['W/D(in $)']) if pd.notna(row['W/D(in $)']) else 0
+                )
+                db.session.add(entry)
+        
+        db.session.commit()
         
         return jsonify({
             'success': True,
-            'data': data
+            'message': 'Data imported successfully'
         })
         
     except Exception as e:
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': str(e)
