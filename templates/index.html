@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto P&L Tracker - Professional</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>💰 Crypto P&L Tracker</h1>
+                <p>Professional Trading Performance Dashboard</p>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3>⚙️ Settings</h3>
+                    <div class="form-group">
+                        <label>Exchange Rate (₹/$)</label>
+                        <input type="number" id="exchangeRate" value="80" min="1" step="0.1">
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>➕ Add Entry</h3>
+                    <form id="addEntryForm">
+                        <div class="form-group">
+                            <label>Date</label>
+                            <input type="date" id="entryDate" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Gain ($)</label>
+                            <input type="number" id="entryGain" step="0.01" min="0" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label>Loss ($)</label>
+                            <input type="number" id="entryLoss" step="0.01" min="0" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label>Withdrawal/Deposit ($)</label>
+                            <input type="number" id="entryWD" step="0.01" value="0">
+                            <small>Positive = Withdrawal, Negative = Deposit</small>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add Entry</button>
+                    </form>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>📁 Import/Export</h3>
+                    <button onclick="exportExcel()" class="btn btn-success">📥 Export Excel</button>
+                    <button onclick="document.getElementById('importFile').click()" class="btn btn-info">📤 Import Excel/CSV</button>
+                    <input type="file" id="importFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="importFile(event)">
+                    <button onclick="clearData()" class="btn btn-danger">🗑️ Clear All</button>
+                </div>
+            </aside>
+
+            <!-- Dashboard Area -->
+            <main class="dashboard">
+                <!-- Tabs -->
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="showTab('dashboard')">📊 Dashboard</button>
+                    <button class="tab-btn" onclick="showTab('daily')">📅 Daily View</button>
+                    <button class="tab-btn" onclick="showTab('monthly')">📆 Monthly View</button>
+                    <button class="tab-btn" onclick="showTab('charts')">📈 Charts</button>
+                </div>
+
+                <!-- Dashboard Tab -->
+                <div id="dashboardTab" class="tab-content active">
+                    <h2>Key Metrics</h2>
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <div class="metric-label">Total Gains</div>
+                            <div class="metric-value" id="totalGains">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Total Losses</div>
+                            <div class="metric-value" id="totalLosses">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Net P&L</div>
+                            <div class="metric-value" id="netPnL">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Current Balance</div>
+                            <div class="metric-value" id="currentBalance">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Total W/D</div>
+                            <div class="metric-value" id="totalWD">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Total W/D (₹)</div>
+                            <div class="metric-value" id="totalWDINR">₹0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Trading Days</div>
+                            <div class="metric-value" id="tradingDays">0</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Avg Daily P&L</div>
+                            <div class="metric-value" id="avgDaily">$0.00</div>
+                        </div>
+                    </div>
+
+                    <h3>📋 Recent Entries</h3>
+                    <div id="recentEntries" class="table-container">
+                        <p class="empty-state">No entries yet. Add your first entry to get started!</p>
+                    </div>
+                </div>
+
+                <!-- Daily View Tab -->
+                <div id="dailyTab" class="tab-content">
+                    <h2>Daily Records</h2>
+                    <div class="filter-bar">
+                        <select id="dateFilter" onchange="applyDateFilter()">
+                            <option value="all">All Records</option>
+                            <option value="7">Last 7 Days</option>
+                            <option value="30">Last 30 Days</option>
+                            <option value="custom">Custom Range</option>
+                        </select>
+                        <div id="customRange" style="display:none">
+                            <input type="date" id="startDate">
+                            <input type="date" id="endDate">
+                            <button onclick="applyDateFilter()" class="btn btn-sm">Apply</button>
+                        </div>
+                    </div>
+                    <div id="dailyTable" class="table-container">
+                        <p class="empty-state">No daily records available.</p>
+                    </div>
+                </div>
+
+                <!-- Monthly View Tab -->
+                <div id="monthlyTab" class="tab-content">
+                    <h2>Monthly Summary</h2>
+                    <div id="monthlyTable" class="table-container">
+                        <p class="empty-state">No monthly data available.</p>
+                    </div>
+                </div>
+
+                <!-- Charts Tab -->
+                <div id="chartsTab" class="tab-content">
+                    <h2>Performance Charts</h2>
+                    <div class="charts-grid">
+                        <div class="chart-container">
+                            <canvas id="cumulativePnLChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="gainsLossesChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="balanceChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="monthlyPnLChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast"></div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
