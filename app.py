@@ -25,10 +25,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Exchange rate
-EXCHANGE_RATE = 80
-
-# Database Model
+# Database Models
 class Entry(db.Model):
     __tablename__ = 'entries'
     
@@ -36,22 +33,47 @@ class Entry(db.Model):
     date = db.Column(db.Date, nullable=False)
     gain = db.Column(db.Float, default=0)
     loss = db.Column(db.Float, default=0)
-    wd = db.Column(db.Float, default=0)
+    withdrawal = db.Column(db.Float, default=0)
+    deposit = db.Column(db.Float, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     def to_dict(self):
         return {
+            'id': self.id,
             'Date': self.date.strftime('%Y-%m-%d'),
             'Gain': self.gain,
             'Loss': self.loss,
-            'WD': self.wd
+            'Withdrawal': self.withdrawal,
+            'Deposit': self.deposit
+        }
+
+class Settings(db.Model):
+    __tablename__ = 'settings'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    starting_balance = db.Column(db.Float, default=0)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'starting_balance': self.starting_balance
         }
 
 # Create tables
 with app.app_context():
     db.create_all()
+    # Initialize settings if not exists
+    if Settings.query.count() == 0:
+        default_settings = Settings(starting_balance=0)
+        db.session.add(default_settings)
+        db.session.commit()
 
-def calculate_daily_metrics(data):
+def get_starting_balance():
+    """Get current starting balance from settings"""
+    settings = Settings.query.first()
+    return settings.starting_balance if settings else 0
+
+def calculate_daily_metrics(data, starting_balance):
     """Calculate all derived columns for daily data"""
     if not data:
         return []
@@ -63,7 +85,8 @@ def calculate_daily_metrics(data):
     # Fill NaN with 0 for calculations
     df['Gain'] = df['Gain'].fillna(0)
     df['Loss'] = df['Loss'].fillna(0)
-    df['WD'] = df['WD'].fillna(0)
+    df['Withdrawal'] = df['Withdrawal'].fillna(0)
+    df['Deposit'] = df['Deposit'].fillna(0)
     
     # Calculate cumulative gains and losses
     df['Cgain'] = df['Gain'].cumsum()
@@ -75,15 +98,13 @@ def calculate_daily_metrics(data):
     # Calculate cumulative net
     df['Cum'] = df['Net'].cumsum()
     
-    # Calculate W/D in Rupees
-    df['WD_INR'] = df['WD'] * EXCHANGE_RATE
+    # Calculate cumulative withdrawals and deposits
+    df['CWithdrawal'] = df['Withdrawal'].cumsum()
+    df['CDeposit'] = df['Deposit'].cumsum()
     
-    # Calculate cumulative W/D
-    df['CWD'] = df['WD'].cumsum()
-    df['CWD_INR'] = df['CWD'] * EXCHANGE_RATE
-    
-    # Calculate balance
-    df['Balance'] = df['Cum'] - df['CWD']
+    # Calculate balance using Formula B
+    # Balance = Starting Balance + Cumulative Net + Cumulative Deposits - Cumulative Withdrawals
+    df['Balance'] = starting_balance + df['Cum'] + df['CDeposit'] - df['CWithdrawal']
     
     # Add serial number
     df.insert(0, 'Sl', range(1, len(df) + 1))
@@ -92,7 +113,7 @@ def calculate_daily_metrics(data):
     df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
     return df.to_dict('records')
 
-def calculate_monthly_summary(daily_data):
+def calculate_monthly_summary(daily_data, starting_balance):
     """Calculate monthly summary from daily data"""
     if not daily_data:
         return []
@@ -105,8 +126,8 @@ def calculate_monthly_summary(daily_data):
     monthly = df.groupby('Month').agg({
         'Gain': 'sum',
         'Loss': 'sum',
-        'WD': 'sum',
-        'WD_INR': 'sum'
+        'Withdrawal': 'sum',
+        'Deposit': 'sum'
     }).reset_index()
     
     # Convert period to timestamp
@@ -118,12 +139,12 @@ def calculate_monthly_summary(daily_data):
     # Calculate cumulative net
     monthly['Cum'] = monthly['Net'].cumsum()
     
-    # Calculate cumulative W/D
-    monthly['CWD'] = monthly['WD'].cumsum()
-    monthly['CWD_INR'] = monthly['CWD'] * EXCHANGE_RATE
+    # Calculate cumulative withdrawals and deposits
+    monthly['CWithdrawal'] = monthly['Withdrawal'].cumsum()
+    monthly['CDeposit'] = monthly['Deposit'].cumsum()
     
-    # Calculate balance
-    monthly['Balance'] = monthly['Cum'] - monthly['CWD']
+    # Calculate balance using Formula B
+    monthly['Balance'] = starting_balance + monthly['Cum'] + monthly['CDeposit'] - monthly['CWithdrawal']
     
     # Add serial number
     monthly.insert(0, 'Sl', range(1, len(monthly) + 1))
@@ -135,6 +156,47 @@ def calculate_monthly_summary(daily_data):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """Get current settings"""
+    try:
+        settings = Settings.query.first()
+        return jsonify({
+            'success': True,
+            'data': settings.to_dict() if settings else {'starting_balance': 0}
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+@app.route('/api/settings', methods=['PUT'])
+def update_settings():
+    """Update settings"""
+    try:
+        data = request.json
+        settings = Settings.query.first()
+        
+        if settings:
+            settings.starting_balance = float(data.get('starting_balance', 0))
+        else:
+            settings = Settings(starting_balance=float(data.get('starting_balance', 0)))
+            db.session.add(settings)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Settings updated successfully'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
 
 @app.route('/api/entries', methods=['GET'])
 def get_entries():
@@ -161,7 +223,8 @@ def add_entry():
             date=datetime.strptime(data['Date'], '%Y-%m-%d').date(),
             gain=float(data.get('Gain', 0)),
             loss=float(data.get('Loss', 0)),
-            wd=float(data.get('WD', 0))
+            withdrawal=float(data.get('Withdrawal', 0)),
+            deposit=float(data.get('Deposit', 0))
         )
         db.session.add(entry)
         db.session.commit()
@@ -206,8 +269,9 @@ def calculate():
     """Calculate metrics for the provided data"""
     try:
         data = request.json.get('data', [])
-        daily_metrics = calculate_daily_metrics(data)
-        monthly_summary = calculate_monthly_summary(daily_metrics)
+        starting_balance = get_starting_balance()
+        daily_metrics = calculate_daily_metrics(data, starting_balance)
+        monthly_summary = calculate_monthly_summary(daily_metrics, starting_balance)
         
         return jsonify({
             'success': True,
@@ -225,8 +289,9 @@ def export_excel():
     """Export data to Excel file"""
     try:
         data = request.json.get('data', [])
-        daily_metrics = calculate_daily_metrics(data)
-        monthly_summary = calculate_monthly_summary(daily_metrics)
+        starting_balance = get_starting_balance()
+        daily_metrics = calculate_daily_metrics(data, starting_balance)
+        monthly_summary = calculate_monthly_summary(daily_metrics, starting_balance)
         
         # Create Excel file
         wb = Workbook()
@@ -236,8 +301,9 @@ def export_excel():
         ws_daily.title = "DateWise"
         
         # Headers
-        headers = ['Sl', 'Date', 'Gain(in $)', 'Cgain(in$)', 'Loss(in $)', 'Closs(in$)', 
-                  'Net(in $)', 'Cum(in $)', 'W/D(in $)', 'W/D(in R)', 'CWD(in$)', 'CWD(inR)', 'Balance($)']
+        headers = ['Sl', 'Date', 'Gain ($)', 'Cgain ($)', 'Loss ($)', 'Closs ($)', 
+                  'Net ($)', 'Cum ($)', 'Withdrawal ($)', 'CWithdrawal ($)', 
+                  'Deposit ($)', 'CDeposit ($)', 'Balance ($)']
         ws_daily.append(headers)
         
         # Style headers
@@ -260,18 +326,19 @@ def export_excel():
                 item.get('Closs'),
                 item.get('Net'),
                 item.get('Cum'),
-                item.get('WD'),
-                item.get('WD_INR'),
-                item.get('CWD'),
-                item.get('CWD_INR'),
+                item.get('Withdrawal'),
+                item.get('CWithdrawal'),
+                item.get('Deposit'),
+                item.get('CDeposit'),
                 item.get('Balance')
             ])
         
         # Monthly sheet
         ws_monthly = wb.create_sheet("Monthwise")
         
-        headers_monthly = ['Sl', 'Month', 'Gain(in $)', 'Loss(in $)', 'Net(in $)', 
-                          'Cum(in $)', 'W/D(in $)', 'W/D(in R)', 'CWD(in$)', 'CWD(inR)', 'Balance($)']
+        headers_monthly = ['Sl', 'Month', 'Gain ($)', 'Loss ($)', 'Net ($)', 
+                          'Cum ($)', 'Withdrawal ($)', 'CWithdrawal ($)', 
+                          'Deposit ($)', 'CDeposit ($)', 'Balance ($)']
         ws_monthly.append(headers_monthly)
         
         for cell in ws_monthly[1]:
@@ -287,10 +354,10 @@ def export_excel():
                 item.get('Loss'),
                 item.get('Net'),
                 item.get('Cum'),
-                item.get('WD'),
-                item.get('WD_INR'),
-                item.get('CWD'),
-                item.get('CWD_INR'),
+                item.get('Withdrawal'),
+                item.get('CWithdrawal'),
+                item.get('Deposit'),
+                item.get('CDeposit'),
                 item.get('Balance')
             ])
         
@@ -329,7 +396,7 @@ def import_excel():
             return jsonify({'success': False, 'error': 'Invalid file format'}), 400
         
         # Keep only required columns
-        required_cols = ['Date', 'Gain(in $)', 'Loss(in $)', 'W/D(in $)']
+        required_cols = ['Date', 'Gain ($)', 'Loss ($)', 'Withdrawal ($)', 'Deposit ($)']
         
         if not all(col in df.columns for col in required_cols):
             return jsonify({'success': False, 'error': 'Missing required columns'}), 400
@@ -342,9 +409,10 @@ def import_excel():
             if pd.notna(row['Date']):
                 entry = Entry(
                     date=pd.to_datetime(row['Date']).date(),
-                    gain=float(row['Gain(in $)']) if pd.notna(row['Gain(in $)']) else 0,
-                    loss=float(row['Loss(in $)']) if pd.notna(row['Loss(in $)']) else 0,
-                    wd=float(row['W/D(in $)']) if pd.notna(row['W/D(in $)']) else 0
+                    gain=float(row['Gain ($)']) if pd.notna(row['Gain ($)']) else 0,
+                    loss=float(row['Loss ($)']) if pd.notna(row['Loss ($)']) else 0,
+                    withdrawal=float(row['Withdrawal ($)']) if pd.notna(row['Withdrawal ($)']) else 0,
+                    deposit=float(row['Deposit ($)']) if pd.notna(row['Deposit ($)']) else 0
                 )
                 db.session.add(entry)
         
