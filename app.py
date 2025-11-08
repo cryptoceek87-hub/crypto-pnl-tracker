@@ -59,7 +59,44 @@ class Settings(db.Model):
             'starting_balance': self.starting_balance
         }
 
-# Create tables
+# Auto-reset database if RESET_DB_NOW environment variable is set
+RESET_DB_NOW = os.environ.get('RESET_DB_NOW', '').lower() in ['yes', 'true', '1']
+
+if RESET_DB_NOW:
+    print("=" * 70)
+    print("RESET_DB_NOW DETECTED - RESETTING DATABASE...")
+    print("=" * 70)
+    with app.app_context():
+        from sqlalchemy import text
+        try:
+            # Drop all tables
+            print("Dropping old tables...")
+            with db.engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS entries CASCADE"))
+                conn.execute(text("DROP TABLE IF EXISTS settings CASCADE"))
+                conn.commit()
+            print("✓ Old tables dropped")
+            
+            # Create new tables
+            print("Creating new tables...")
+            db.create_all()
+            print("✓ New tables created")
+            
+            # Initialize settings
+            print("Initializing settings...")
+            default_settings = Settings(starting_balance=0)
+            db.session.add(default_settings)
+            db.session.commit()
+            print("✓ Settings initialized")
+            
+            print("=" * 70)
+            print("DATABASE RESET COMPLETE!")
+            print("NOW DELETE THE RESET_DB_NOW VARIABLE FROM RAILWAY!")
+            print("=" * 70)
+        except Exception as e:
+            print(f"ERROR during reset: {str(e)}")
+
+# Create tables normally if not resetting
 with app.app_context():
     db.create_all()
     # Initialize settings if not exists
